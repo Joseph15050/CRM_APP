@@ -118,28 +118,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+
+# --- CONVERSATION STATES ---
+REG_AUTHOR_NAME, REG_EMAIL, REG_WHATSAPP, REG_X, REG_OPAY = range(10, 15)
+
 # --- WRITER SELF-REGISTRATION CONVERSATION ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handle = get_user_handle(update)
     
-    # Check if already registered
+    # Check if writer is already registered
     writers = await asyncio.to_thread(writers_sheet.get_all_records)
     for w in writers:
         w_id = str(w.get("Writer Telegram ID") or "").strip()
         if w_id.lower() == handle.lower():
-            await update.message.reply_text("✅ You are already registered in the CRM system! Use `/mybrands` to check your brands.", parse_mode="Markdown")
+            await update.message.reply_text(
+                "✅ You are already registered in the CRM system! Use `/mybrands` to check your assigned brands.", 
+                parse_mode="Markdown"
+            )
             return ConversationHandler.END
 
     await update.message.reply_text(
-        "📝 *Writer Self-Registration*\n\nLet's get you set up! Please enter your **Email Address**:",
+        "📝 *Writer Self-Registration*\n\n"
+        "Let's set up your profile!\n"
+        "Please enter your **Blogspot Author Name** (the exact author name/pen name you publish under):",
         parse_mode="Markdown"
     )
+    return REG_AUTHOR_NAME
+
+
+async def reg_author_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["reg_author_name"] = update.message.text.strip()
+    await update.message.reply_text("Great! Now enter your **Email Address**:", parse_mode="Markdown")
     return REG_EMAIL
 
 
 async def reg_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["reg_email"] = update.message.text.strip()
-    await update.message.reply_text("Great! Now enter your **WhatsApp Number** (with country code, e.g., +234...):", parse_mode="Markdown")
+    await update.message.reply_text("Enter your **WhatsApp Number** (with country code, e.g., +234...):", parse_mode="Markdown")
     return REG_WHATSAPP
 
 
@@ -152,7 +167,7 @@ async def reg_whatsapp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reg_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["reg_x"] = update.message.text.strip()
     await update.message.reply_text(
-        "Almost done! Enter your **Opay Account Number & Name**\n*(Example: `7085946786 John Richard`)*:",
+        "Almost done! Enter your **Opay Account Number & Name**\n*(Example: `7083946776 Ubah Joseph`)*:",
         parse_mode="Markdown"
     )
     return REG_OPAY
@@ -162,37 +177,38 @@ async def reg_opay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     opay_info = update.message.text.strip()
     u_data = context.user_data
     handle = get_user_handle(update)
-    writer_name = update.effective_user.full_name or handle
 
-    # Mapping to your exact columns:
-    # [Writer Telegram ID, Writer Name, Email, WhatsApp, X Handle, Opay, Assigned Brands Count, Max Capacity, Status, Points]
+    # Saved to Writers sheet columns:
+    # [Writer Telegram ID, Writer Name / Blog Author Name, Email, WhatsApp, X Handle, Opay, Assigned Brands Count, Max Capacity, Status, Points]
     new_row = [
         handle,
-        writer_name,
+        u_data["reg_author_name"],
         u_data["reg_email"],
         u_data["reg_whatsapp"],
         u_data["reg_x"],
         opay_info,
-        0,       # Assigned Brands Count (Starts at 0)
-        5,       # Max Capacity
-        "Active",# Status
-        0        # Points (Starts at 0 for leaderboard)
+        0,        # Initial Assigned Brands Count
+        5,        # Max Capacity
+        "Active", # Status
+        0         # Initial Points
     ]
 
     await asyncio.to_thread(writers_sheet.append_row, new_row)
 
     await update.message.reply_text(
         f"🎉 *Registration Successful!*\n\n"
-        f"👤 *Handle:* `{handle}`\n"
+        f"👤 *Telegram Handle:* `{handle}`\n"
+        f"✍️ *Blog Author Name:* *{u_data['reg_author_name']}*\n"
         f"📧 *Email:* `{u_data['reg_email']}`\n"
         f"💬 *WhatsApp:* `{u_data['reg_whatsapp']}`\n"
         f"🐦 *X Handle:* `{u_data['reg_x']}`\n"
         f"🏦 *Opay:* `{opay_info}`\n\n"
-        f"You are all set! Use `/mybrands` to view your brands or `/ranks` to check standings.",
+        f"You are all set! Use `/mybrands` to view assigned brands or `/ranks` to check leaderboard standings.",
         parse_mode="Markdown"
     )
     context.user_data.clear()
     return ConversationHandler.END
+                    
     
 
 
@@ -604,9 +620,10 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Self-Registration Conversation Handler
-    reg_conv = ConversationHandler(
+        reg_conv = ConversationHandler(
         entry_points=[CommandHandler("register", start_registration)],
         states={
+            REG_AUTHOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_author_name)],
             REG_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_email)],
             REG_WHATSAPP: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_whatsapp)],
             REG_X: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_x)],
@@ -614,6 +631,7 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
+
 
     add_brand_conv = ConversationHandler(
         entry_points=[CommandHandler("addbrand", start_add_brand)],
