@@ -18,14 +18,13 @@ from telegram.ext import (
     filters,
 )
 
-
 # Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- CONFIGURATION (ENVIRONMENT VARIABLES) ---
+# --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9215727245:AAHS4_B3C-mAdKTxHgVjvpD3N30Bx2zh1G0")
 ADMIN_TELEGRAM_HANDLES = ["@greclone"]
 
@@ -35,7 +34,6 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# Support both local credentials.json and Render GOOGLE_CREDENTIALS_JSON env var
 creds_env = os.getenv("GOOGLE_CREDENTIALS_JSON")
 if creds_env:
     CREDS = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(creds_env), SCOPE)
@@ -43,7 +41,6 @@ else:
     CREDS = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", SCOPE)
 
 GSPREAD_CLIENT = gspread.authorize(CREDS)
-
 SPREADSHEET_NAME = "Greclone_Blog_CRM"
 sheet = GSPREAD_CLIENT.open(SPREADSHEET_NAME)
 
@@ -79,10 +76,11 @@ def is_admin(user_handle: str) -> bool:
 
 def get_writer_brands(writer_handle: str):
     records = brands_sheet.get_all_records()
-    assigned_brands = [
-        r for r in records 
-        if str(r.get("Assigned Writer Telegram ID") or r.get("Assigned Writer")).strip() == writer_handle
-    ]
+    assigned_brands = []
+    for r in records:
+        assigned_id = str(r.get("Assigned Writer Telegram ID") or "").strip()
+        if assigned_id.lower() == writer_handle.lower():
+            assigned_brands.append(r)
     return assigned_brands
 
 
@@ -94,29 +92,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if admin_flag:
         msg = (
             f"👑 *Welcome Admin ({handle})*\n\n"
-            "Use the menu below or type commands:\n"
+            "Admin Controls:\n"
             "• `/addbrand` - Add a new brand\n"
-            "• `/search <keyword>` - Search brands by name/category\n"
+            "• `/search <keyword>` - Search brands\n"
+            "• `/auto_distribute` - Automatically assign 5 brands to active writers\n"
             "• `/mybrands` - View assigned brands\n"
             "• `/cancel` - Cancel current action"
         )
     else:
         msg = (
             f"📝 *Welcome Writer ({handle})*\n\n"
-            "Use the menu below to manage your assigned brands:\n"
-            "• `/mybrands` - View your assigned brands & submit logs\n"
+            "Your Dashboard:\n"
+            "• `/mybrands` - View your strictly assigned 5 brands & submit logs\n"
             "• `/cancel` - Cancel current action"
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+# --- STRICT WRITER VIEW (Only assigned brands) ---
 async def my_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handle = get_user_handle(update)
     brands = await asyncio.to_thread(get_writer_brands, handle)
 
     if not brands:
         await update.message.reply_text(
-            f"⚠️ No brands are currently assigned to `{handle}` in the CRM.",
+            f"⚠️ You currently have **0 brands** assigned to your handle (`{handle}`). Please contact the admin.",
             parse_mode="Markdown",
         )
         return
@@ -151,6 +151,62 @@ async def my_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# --- ADMIN: AUTO-DISTRIBUTE 5 BRANDS PER WRITER ---
+async def auto_distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    handle = get_user_handle(update)
+    if not await asyncio.to_thread(is_admin, handle):
+        await update.message.reply_text("⛔ Unauthorized action. Admin access required.")
+        return
+
+    try:
+        # Fetch all writers and brands from sheets
+        writers_data = await asyncio.to_thread(writers_sheet.get_all_records)
+        brands_data = await asyncio.to_thread(brands_sheet.get_all_records)
+
+        # Find unassigned brands (where Assigned Writer Telegram ID is empty)
+        unassigned_brands = [
+            (i + 2, b) for i, b in enumerate(brands_data) 
+            if not str(b.get("Assigned Writer Telegram ID", "")).strip()
+        ]
+
+        if not unassigned_brands:
+            await update.message.reply_text("⚠️ No unassigned brands available in the database to distribute.")
+            return
+
+        assigned_count = 0
+        for writer in writers_data:
+            w_id = str(writer.get("Writer Telegram ID") or writer.get("Telegram ID")).strip()
+            w_name = str(writer.get("Writer Name")).strip()
+            status = str(writer.get("Status", "Active")).strip().lower()
+
+            if status != "active" or not w_id:
+                continue
+
+            # Check how many brands this writer already has
+            current_writer_brands = [b for b in brands_data if str(b.get("Assigned Writer Telegram ID")).strip() == w_id]
+            needed = 5 - len(current_writer_brands)
+
+            if needed > 0 and unassigned_brands:
+                for _ in range(needed):
+                    if not unassigned_brands:
+                        break
+                    row_idx, brand_obj = unassigned_brands.pop(0)
+                    
+                    # Update Google Sheet cell values for Brands tab
+                    # Column G is Assigned Writer Telegram ID (7th column), Column H is Assigned Writer Name (8th column)
+                    await asyncio.to_thread(brands_sheet.update_cell, row_idx, 7, w_id)
+                    await asyncio.to_thread(brands_sheet.update_cell, row_idx, 8, w_name)
+                    assigned_count += 1
+
+        await update.message.reply_text(
+            f"✅ *Distribution Complete!*\nSuccessfully assigned brands (up to 5 per writer) across your active team.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error in auto_distribute: {e}")
+        await update.message.reply_text(f"❌ Error executing distribution: {str(e)}")
+
+
 async def search_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handle = get_user_handle(update)
     if not await asyncio.to_thread(is_admin, handle):
@@ -174,15 +230,10 @@ async def search_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     res = f"🔍 *Found {len(matches)} matching brand(s):*\n\n"
     for b in matches[:10]:
-        assigned = b.get("Assigned Writer Telegram ID") or b.get("Assigned Writer") or "❌ Unassigned"
-        b_name = b.get("Brand Name")
-        b_id = b.get("Brand ID")
-        b_cat = b.get("Category")
-        b_web = b.get("Website")
-
+        assigned = b.get("Assigned Writer Telegram ID") or "❌ Unassigned"
         res += (
-            f"• *{b_name}* (`{b_id}`) | {b_cat}\n"
-            f"  Assigned: `{assigned}` | [Website]({b_web})\n\n"
+            f"• *{b.get('Brand Name')}* (`{b.get('Brand ID')}`) | {b.get('Category')}\n"
+            f"  Assigned: `{assigned}` | [Website]({b.get('Website')})\n\n"
         )
     await update.message.reply_text(res, parse_mode="Markdown", disable_web_page_preview=True)
 
@@ -200,13 +251,13 @@ async def start_add_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_brand_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["b_name"] = update.message.text
-    await update.message.reply_text("Enter the **Category** (e.g., DeFi / DEX, Infrastructure / L2):", parse_mode="Markdown")
+    await update.message.reply_text("Enter the **Category**:", parse_mode="Markdown")
     return ADD_CATEGORY
 
 
 async def add_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["b_cat"] = update.message.text
-    await update.message.reply_text("Enter the **X Handle / URL** (e.g., https://x.com/brand):", parse_mode="Markdown")
+    await update.message.reply_text("Enter the **X Handle / URL**:", parse_mode="Markdown")
     return ADD_X_HANDLE
 
 
@@ -236,7 +287,6 @@ async def add_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_id = f"BRD-{len(records) + 1:03d}"
     today_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Match all 11 columns in Greclone_Blog_CRM_Brands.csv
     new_row = [
         new_id,
         u_data["b_name"],
@@ -247,8 +297,8 @@ async def add_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "",  # Assigned Writer Telegram ID
         "",  # Assigned Writer Name
         notes if notes.lower() != "none" else "",
-        "Active",  # Status
-        today_str,  # Last Updated
+        "Active",
+        today_str,
     ]
 
     await asyncio.to_thread(brands_sheet.append_row, new_row)
@@ -291,10 +341,7 @@ async def save_log_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_id = f"LOG-{1001 + len(logs)}"
     timestamp_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Match exact 6 columns in Greclone_Blog_CRM_Activity_Logs.csv
-    # [Log ID, Timestamp, Brand ID, Telegram ID, Writer Name, Action/Note]
     log_row = [log_id, timestamp_str, brand_id, handle, writer_name, log_text]
-
     await asyncio.to_thread(logs_sheet.append_row, log_row)
 
     await update.message.reply_text(
@@ -309,6 +356,19 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Operation cancelled.")
     context.user_data.clear()
     return ConversationHandler.END
+
+
+# --- HEALTH CHECK SERVER FOR RENDER ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
 
 
 # --- MAIN ENGINE ---
@@ -339,29 +399,17 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mybrands", my_brands))
     app.add_handler(CommandHandler("search", search_brands))
+    app.add_handler(CommandHandler("auto_distribute", auto_distribute))
     app.add_handler(add_brand_conv)
     app.add_handler(add_log_conv)
 
     print("🤖 Telegram CRM Bot started running...")
+    
+    # Start dummy web server in background thread for Render
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+    
     app.run_polling()
 
 
-# Dummy HTTP server to satisfy Render's port binding health check
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
-
-def run_dummy_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
-
 if __name__ == "__main__":
-    # Start dummy web server in a separate background thread
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-    
-    # Run your Telegram bot main loop
     main()
-    
