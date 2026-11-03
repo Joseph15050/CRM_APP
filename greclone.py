@@ -230,14 +230,17 @@ async def search_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🔍 No brands found matching '{query}'. Try a broader keyword.")
             return
 
-        res = f"🔍 *Found {len(matches)} matching brand(s) for '{query}':*\n\n"
+                res = f"🔍 *Found {len(matches)} matching brand(s) for '{query}':*\n\n"
         for b in matches[:10]:
             assigned = b.get("Assigned Writer Telegram ID") or "❌ Unassigned"
+            x_handle = b.get("X Handle (URL)") or b.get("X Handle") or b.get("X") or "N/A"
             res += (
                 f"• *{b.get('Brand Name')}* (`{b.get('Brand ID')}`) | {b.get('Category')}\n"
+                f"  🐦 X: `{x_handle}`\n"
                 f"  👤 Assigned: `{assigned}`\n"
                 f"  🌐 [Website]({b.get('Website')})\n\n"
             )
+            
         await update.message.reply_text(res, parse_mode="Markdown", disable_web_page_preview=True)
     except Exception as e:
         logger.error(f"Error searching brands: {e}")
