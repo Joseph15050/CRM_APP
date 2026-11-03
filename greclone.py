@@ -21,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_BOT_TOKEN = "9215727245:AAHS4_B3C-mAdKTxHgVjvpD3N30Bx2zh1G0"
 ADMIN_TELEGRAM_HANDLES = ["@greclone"]  # List of Admin Telegram Handles (or Telegram IDs)
 
 # --- GOOGLE SHEETS SETUP ---
