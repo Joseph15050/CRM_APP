@@ -1,9 +1,11 @@
+import threading
 import os
 import json
 import logging
 import asyncio
 from datetime import datetime
 import gspread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -343,5 +345,22 @@ def main():
     app.run_polling()
 
 
+# Dummy HTTP server to satisfy Render's port binding health check
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
 if __name__ == "__main__":
+    # Start dummy web server in a separate background thread
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+    
+    # Run your Telegram bot main loop
     main()
+    
