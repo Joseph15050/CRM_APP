@@ -164,8 +164,8 @@ async def reg_opay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handle = get_user_handle(update)
     writer_name = update.effective_user.full_name or handle
 
-    # Save to Writers sheet
-    # Columns: [Writer Telegram ID, Writer Name, Email, WhatsApp, X Handle, Opay Account, Points, Status]
+    # Mapping to your exact columns:
+    # [Writer Telegram ID, Writer Name, Email, WhatsApp, X Handle, Opay, Assigned Brands Count, Max Capacity, Status, Points]
     new_row = [
         handle,
         writer_name,
@@ -173,8 +173,10 @@ async def reg_opay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u_data["reg_whatsapp"],
         u_data["reg_x"],
         opay_info,
-        0,        # Initial Points
-        "Active"  # Status
+        0,       # Assigned Brands Count (Starts at 0)
+        5,       # Max Capacity
+        "Active",# Status
+        0        # Points (Starts at 0 for leaderboard)
     ]
 
     await asyncio.to_thread(writers_sheet.append_row, new_row)
@@ -186,11 +188,13 @@ async def reg_opay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💬 *WhatsApp:* `{u_data['reg_whatsapp']}`\n"
         f"🐦 *X Handle:* `{u_data['reg_x']}`\n"
         f"🏦 *Opay:* `{opay_info}`\n\n"
-        f"You are now ready! Contact the admin to assign your brands or use `/ranks` to check standings.",
+        f"You are all set! Use `/mybrands` to view your brands or `/ranks` to check standings.",
         parse_mode="Markdown"
     )
     context.user_data.clear()
     return ConversationHandler.END
+    
+
 
 
 # --- LEADERBOARD & RANKS (`/ranks`) ---
