@@ -49,11 +49,9 @@ writers_sheet = sheet.worksheet("Writers")
 logs_sheet = sheet.worksheet("Activity_Logs")
 
 # --- CONVERSATION STATES ---
-# Brand States
 ADD_BRAND_NAME, ADD_CATEGORY, ADD_X_HANDLE, ADD_WEBSITE, ADD_DESC, ADD_NOTES = range(6)
 ADD_LOG_CONTENT = 6
 
-# Writer Registration States
 REG_AUTHOR_NAME, REG_EMAIL, REG_WHATSAPP, REG_X, REG_OPAY = range(10, 15)
 
 
@@ -69,10 +67,10 @@ def is_admin(user_handle: str) -> bool:
     try:
         records = writers_sheet.get_all_records()
         for r in records:
-            writer_id = str(r.get("Writer Telegram ID") or r.get("Telegram ID")).strip()
-            status = str(r.get("Status") or r.get("Role")).strip().lower()
-            if writer_id == user_handle and (status == "admin" or status == "active"):
-                pass
+            writer_id = str(r.get("Writer Telegram ID") or "").strip()
+            status = str(r.get("Status") or "").strip().lower()
+            if writer_id.lower() == user_handle.lower() and status == "admin":
+                return True
     except Exception as e:
         logger.error(f"Error checking admin status: {e}")
     return user_handle in ADMIN_TELEGRAM_HANDLES
@@ -100,9 +98,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/addbrand` - Add a new brand\n"
             "• `/search <keyword>` - Flexible search across brands\n"
             "• `/editbrand <ID> <field> <value>` - Update brand details / append notes\n"
-            "• `/auto_distribute` - Automatically assign 5 brands to active writers\n"
+            "• `/auto_distribute` - Automatically assign up to 5 brands to active writers\n"
+            "• `/addpoints <@handle> <pts>` - Award/deduct points\n"
             "• `/ranks` - View global writer leaderboard & rankings\n"
-            "• `/mybrands` - View assigned brands\n"
             "• `/cancel` - Cancel current action"
         )
     else:
@@ -126,8 +124,7 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
         w_id = str(w.get("Writer Telegram ID") or "").strip()
         if w_id.lower() == handle.lower():
             await update.message.reply_text(
-                "✅ You are already registered in the CRM system! Use `/mybrands` to check your assigned brands.", 
-                parse_mode="Markdown"
+                "✅ You are already registered in the CRM system! Use `/mybrands` to check your assigned brands."
             )
             return ConversationHandler.END
 
@@ -172,6 +169,8 @@ async def reg_opay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u_data = context.user_data
     handle = get_user_handle(update)
 
+    # Columns mapped exactly to:
+    # [Writer Telegram ID (A), Blog Author Name (B), Email Address (C), WhatsApp Number (D), X Handle (E), Opay Account (F), Assigned Brands Count (G), Max Capacity (5) (H), Status (I), Points (J)]
     new_row = [
         handle,
         u_data["reg_author_name"],
@@ -179,22 +178,22 @@ async def reg_opay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u_data["reg_whatsapp"],
         u_data["reg_x"],
         opay_info,
-        0,        # Initial Assigned Brands Count
-        5,        # Max Capacity
+        0,        # Assigned Brands Count
+        5,        # Max Capacity (5)
         "Active", # Status
-        0         # Initial Points
+        0         # Points
     ]
 
     await asyncio.to_thread(writers_sheet.append_row, new_row)
 
     await update.message.reply_text(
         f"🎉 *Registration Successful!*\n\n"
-        f"👤 *Telegram Handle:* `{handle}`\n"
-        f"✍️ *Blog Author Name:* *{u_data['reg_author_name']}*\n"
-        f"📧 *Email:* `{u_data['reg_email']}`\n"
-        f"💬 *WhatsApp:* `{u_data['reg_whatsapp']}`\n"
-        f"🐦 *X Handle:* `{u_data['reg_x']}`\n"
-        f"🏦 *Opay:* `{opay_info}`\n\n"
+        f"👤 Telegram Handle: `{handle}`\n"
+        f"✍️ Blog Author Name: {u_data['reg_author_name']}\n"
+        f"📧 Email: {u_data['reg_email']}\n"
+        f"💬 WhatsApp: {u_data['reg_whatsapp']}\n"
+        f"🐦 X Handle: {u_data['reg_x']}\n"
+        f"🏦 Opay: {opay_info}\n\n"
         f"You are all set! Use `/mybrands` to view assigned brands or `/ranks` to check leaderboard standings.",
         parse_mode="Markdown"
     )
@@ -224,10 +223,10 @@ async def show_ranks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for idx, w in enumerate(sorted_writers[:10], start=1):
             w_id = str(w.get("Writer Telegram ID") or "").strip()
-            w_name = str(w.get("Writer Name") or w.get("Blog Author Name") or w_id).strip()
+            w_name = str(w.get("Blog Author Name") or w.get("Writer Name") or w_id).strip()
             pts = w.get("Points", 0)
             
-            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"`#{idx}`"
+            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"#{idx}"
             leaderboard_text += f"{medal} *{w_name}* (`{w_id}`) — *{pts} pts*\n"
 
             if w_id.lower() == handle.lower():
@@ -253,20 +252,19 @@ async def show_ranks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error loading leaderboard: {str(e)}")
 
 
-# --- STRICT WRITER VIEW (Only assigned brands) ---
+# --- STRICT WRITER VIEW (Plain-Text Safe Brand Cards) ---
 async def my_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handle = get_user_handle(update)
     brands = await asyncio.to_thread(get_writer_brands, handle)
 
     if not brands:
         await update.message.reply_text(
-            f"⚠️ You currently have **0 brands** assigned to your handle (`{handle}`). Please use `/register` if you haven't, or contact the admin.",
-            parse_mode="Markdown",
+            f"⚠️ You currently have 0 brands assigned to your handle ({handle}). Please use /register if you haven't, or contact the admin."
         )
         return
 
     await update.message.reply_text(
-        f"📋 *Your Assigned Brands ({len(brands)}/5):*", parse_mode="Markdown"
+        f"📋 Your Assigned Brands ({len(brands)}/5):"
     )
 
     for brand in brands[:5]:
@@ -278,21 +276,30 @@ async def my_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         b_desc = brand.get("Description (About)") or brand.get("Description")
         b_notes = brand.get("Notes")
 
+        # Plain text formatting prevents markdown crashes
         text = (
-            f"🆔 *ID:* `{b_id}`\n"
-            f"🏢 *Name:* {b_name}\n"
-            f"🏷 *Category:* {b_cat}\n"
-            f"🐦 *X:* {b_x}\n"
-            f"🌐 *Website:* {b_web}\n\n"
-            f"📖 *Description:* {b_desc}\n"
-            f"📌 *Notes:* {b_notes}"
+            f"🆔 ID: {b_id}\n"
+            f"🏢 Name: {b_name}\n"
+            f"🏷 Category: {b_cat}\n"
+            f"🐦 X: {b_x}\n"
+            f"🌐 Website: {b_web}\n\n"
+            f"📖 Description: {b_desc}\n"
+            f"📌 Notes: {b_notes}"
         )
         keyboard = [
             [InlineKeyboardButton("➕ Add Activity Log", callback_data=f"log_{b_id}")]
         ]
-        await update.message.reply_text(
-            text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        
+        try:
+            await update.message.reply_text(
+                text, reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Error sending brand card {b_id}: {e}")
+            await update.message.reply_text(
+                f"🆔 ID: {b_id}\n🏢 Name: {b_name}\n(Details could not be displayed, but log button is active.)",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
 
 # --- ADMIN: AUTO-DISTRIBUTE 5 BRANDS PER WRITER ---
@@ -315,15 +322,15 @@ async def auto_distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ No unassigned brands available in the database to distribute.")
             return
 
-        for writer in writers_data:
-            w_id = str(writer.get("Writer Telegram ID") or writer.get("Telegram ID")).strip()
-            w_name = str(writer.get("Writer Name") or writer.get("Blog Author Name") or "").strip()
+        for idx, writer in enumerate(writers_data):
+            w_id = str(writer.get("Writer Telegram ID") or "").strip()
+            w_name = str(writer.get("Blog Author Name") or writer.get("Writer Name") or "").strip()
             status = str(writer.get("Status", "Active")).strip().lower()
 
             if status != "active" or not w_id:
                 continue
 
-            current_writer_brands = [b for b in brands_data if str(b.get("Assigned Writer Telegram ID")).strip() == w_id]
+            current_writer_brands = [b for b in brands_data if str(b.get("Assigned Writer Telegram ID")).strip().lower() == w_id.lower()]
             needed = 5 - len(current_writer_brands)
 
             if needed > 0 and unassigned_brands:
@@ -332,11 +339,20 @@ async def auto_distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         break
                     row_idx, brand_obj = unassigned_brands.pop(0)
                     
+                    # Update Brands sheet (Col 7: Assigned Writer Telegram ID, Col 8: Assigned Writer Name)
                     await asyncio.to_thread(brands_sheet.update_cell, row_idx, 7, w_id)
                     await asyncio.to_thread(brands_sheet.update_cell, row_idx, 8, w_name)
 
+            # Recalculate brand count and update Writers sheet Column 7 ('Assigned Brands Count')
+            refreshed_brands = await asyncio.to_thread(brands_sheet.get_all_records)
+            final_writer_brands = [b for b in refreshed_brands if str(b.get("Assigned Writer Telegram ID")).strip().lower() == w_id.lower()]
+            new_count = len(final_writer_brands)
+
+            writer_row_idx = idx + 2
+            await asyncio.to_thread(writers_sheet.update_cell, writer_row_idx, 7, new_count)
+
         await update.message.reply_text(
-            f"✅ *Distribution Complete!*\nSuccessfully assigned brands (up to 5 per writer) across your active team.",
+            f"✅ *Distribution Complete!*\nSuccessfully assigned brands (up to 5 per writer) and updated counts in Google Sheets.",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -621,9 +637,9 @@ async def save_log_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     writers = await asyncio.to_thread(writers_sheet.get_all_records)
     writer_name = handle
     for w in writers:
-        w_id = str(w.get("Writer Telegram ID") or w.get("Telegram ID")).strip()
+        w_id = str(w.get("Writer Telegram ID") or "").strip()
         if w_id.lower() == handle.lower():
-            writer_name = w.get("Writer Name") or w.get("Blog Author Name") or handle
+            writer_name = w.get("Blog Author Name") or w.get("Writer Name") or handle
 
     logs = await asyncio.to_thread(logs_sheet.get_all_records)
     log_id = f"LOG-{1001 + len(logs)}"
@@ -663,7 +679,6 @@ def run_dummy_server():
 def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Self-Registration Conversation Handler
     reg_conv = ConversationHandler(
         entry_points=[CommandHandler("register", start_registration)],
         states={
@@ -710,7 +725,6 @@ def main():
 
     print("🤖 Telegram CRM Bot started running...")
     
-    # Start dummy web server in background thread for Render
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
     app.run_polling()
