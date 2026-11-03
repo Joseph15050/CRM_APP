@@ -1,4 +1,3 @@
-```python
 import logging
 from datetime import datetime
 import gspread
