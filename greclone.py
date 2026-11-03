@@ -94,7 +94,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👑 *Welcome Admin ({handle})*\n\n"
             "Admin Controls:\n"
             "• `/addbrand` - Add a new brand\n"
-            "• `/search <keyword>` - Search brands\n"
+            "• `/search <keyword>` - Flexible search across brands\n"
+            "• `/editbrand <ID> <field> <value>` - Update brand details / append notes\n"
             "• `/auto_distribute` - Automatically assign 5 brands to active writers\n"
             "• `/mybrands` - View assigned brands\n"
             "• `/cancel` - Cancel current action"
@@ -103,7 +104,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             f"📝 *Welcome Writer ({handle})*\n\n"
             "Your Dashboard:\n"
-            "• `/mybrands` - View your strictly assigned 5 brands & submit logs\n"
+            "• `/mybrands` - View your strictly assigned brands & submit logs\n"
             "• `/cancel` - Cancel current action"
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -159,11 +160,9 @@ async def auto_distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # Fetch all writers and brands from sheets
         writers_data = await asyncio.to_thread(writers_sheet.get_all_records)
         brands_data = await asyncio.to_thread(brands_sheet.get_all_records)
 
-        # Find unassigned brands (where Assigned Writer Telegram ID is empty)
         unassigned_brands = [
             (i + 2, b) for i, b in enumerate(brands_data) 
             if not str(b.get("Assigned Writer Telegram ID", "")).strip()
@@ -173,7 +172,6 @@ async def auto_distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ No unassigned brands available in the database to distribute.")
             return
 
-        assigned_count = 0
         for writer in writers_data:
             w_id = str(writer.get("Writer Telegram ID") or writer.get("Telegram ID")).strip()
             w_name = str(writer.get("Writer Name")).strip()
@@ -182,7 +180,6 @@ async def auto_distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if status != "active" or not w_id:
                 continue
 
-            # Check how many brands this writer already has
             current_writer_brands = [b for b in brands_data if str(b.get("Assigned Writer Telegram ID")).strip() == w_id]
             needed = 5 - len(current_writer_brands)
 
@@ -192,11 +189,8 @@ async def auto_distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         break
                     row_idx, brand_obj = unassigned_brands.pop(0)
                     
-                    # Update Google Sheet cell values for Brands tab
-                    # Column G is Assigned Writer Telegram ID (7th column), Column H is Assigned Writer Name (8th column)
                     await asyncio.to_thread(brands_sheet.update_cell, row_idx, 7, w_id)
                     await asyncio.to_thread(brands_sheet.update_cell, row_idx, 8, w_name)
-                    assigned_count += 1
 
         await update.message.reply_text(
             f"✅ *Distribution Complete!*\nSuccessfully assigned brands (up to 5 per writer) across your active team.",
@@ -207,35 +201,127 @@ async def auto_distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error executing distribution: {str(e)}")
 
 
+# --- ADMIN: FLEXIBLE SEARCH ---
 async def search_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handle = get_user_handle(update)
     if not await asyncio.to_thread(is_admin, handle):
-        await update.message.reply_text("⛔ Unauthorized action.")
+        await update.message.reply_text("⛔ Admin access required.")
         return
 
     query = " ".join(context.args).strip().lower()
     if not query:
-        await update.message.reply_text("Usage: `/search <category or brand name>`", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/search <keyword>` (e.g., `/search DeFi` or `/search Aether`)", parse_mode="Markdown")
         return
 
-    records = await asyncio.to_thread(brands_sheet.get_all_records)
-    matches = [
-        r for r in records
-        if query in str(r.get("Brand Name")).lower() or query in str(r.get("Category")).lower()
-    ]
+    try:
+        records = await asyncio.to_thread(brands_sheet.get_all_records)
+        matches = []
+        for r in records:
+            b_name = str(r.get("Brand Name", "")).lower()
+            b_cat = str(r.get("Category", "")).lower()
+            b_desc = str(r.get("Description (About)", "")).lower()
+            b_notes = str(r.get("Notes", "")).lower()
+            b_id = str(r.get("Brand ID", "")).lower()
 
-    if not matches:
-        await update.message.reply_text(f"🔍 No brands found matching '{query}'.")
+            if query in b_name or query in b_cat or query in b_desc or query in b_notes or query in b_id:
+                matches.append(r)
+
+        if not matches:
+            await update.message.reply_text(f"🔍 No brands found matching '{query}'. Try a broader keyword.")
+            return
+
+        res = f"🔍 *Found {len(matches)} matching brand(s) for '{query}':*\n\n"
+        for b in matches[:10]:
+            assigned = b.get("Assigned Writer Telegram ID") or "❌ Unassigned"
+            res += (
+                f"• *{b.get('Brand Name')}* (`{b.get('Brand ID')}`) | {b.get('Category')}\n"
+                f"  👤 Assigned: `{assigned}`\n"
+                f"  🌐 [Website]({b.get('Website')})\n\n"
+            )
+        await update.message.reply_text(res, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception as e:
+        logger.error(f"Error searching brands: {e}")
+        await update.message.reply_text(f"❌ Error performing search: {str(e)}")
+
+
+# --- ADMIN: EDIT BRAND (WITH AUTO-APPEND FOR NOTES) ---
+async def edit_brand(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    handle = get_user_handle(update)
+    if not await asyncio.to_thread(is_admin, handle):
+        await update.message.reply_text("⛔ Admin access required.")
         return
 
-    res = f"🔍 *Found {len(matches)} matching brand(s):*\n\n"
-    for b in matches[:10]:
-        assigned = b.get("Assigned Writer Telegram ID") or "❌ Unassigned"
-        res += (
-            f"• *{b.get('Brand Name')}* (`{b.get('Brand ID')}`) | {b.get('Category')}\n"
-            f"  Assigned: `{assigned}` | [Website]({b.get('Website')})\n\n"
+    if len(context.args) < 3:
+        msg = (
+            "🛠 *Usage for Editing Brands:*\n"
+            "`/editbrand <Brand_ID> <field> <new_value>`\n\n"
+            "*Available Fields:* `name`, `category`, `x`, `website`, `desc`, `notes`, `status`\n"
+            "*Note on `notes`:* Adding new notes automatically appends them cleanly to any existing notes!\n"
+            "*Example:* `/editbrand BRD-001 notes Completed week 1 content rollout.`"
         )
-    await update.message.reply_text(res, parse_mode="Markdown", disable_web_page_preview=True)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+
+    target_id = context.args[0].strip().upper()
+    field_key = context.args[1].strip().lower()
+    input_value = " ".join(context.args[2:]).strip()
+
+    field_mapping = {
+        "name": (2, "Brand Name"),
+        "category": (3, "Category"),
+        "x": (4, "X Handle (URL)"),
+        "website": (5, "Website"),
+        "desc": (6, "Description (About)"),
+        "notes": (9, "Notes"),
+        "status": (10, "Status")
+    }
+
+    if field_key not in field_mapping:
+        await update.message.reply_text(f"❌ Invalid field '{field_key}'. Use: name, category, x, website, desc, notes, status")
+        return
+
+    col_idx, col_name = field_mapping[field_key]
+
+    try:
+        brands_data = await asyncio.to_thread(brands_sheet.get_all_records)
+        found_row = None
+        current_val = ""
+        
+        for idx, brand in enumerate(brands_data):
+            if str(brand.get("Brand ID")).strip().upper() == target_id:
+                found_row = idx + 2
+                current_val = str(brand.get("Notes", "")).strip()
+                break
+
+        if not found_row:
+            await update.message.reply_text(f"❌ Brand ID `{target_id}` not found in the CRM.", parse_mode="Markdown")
+            return
+
+        if field_key == "notes":
+            today_date = datetime.now().strftime("%Y-%m-%d")
+            formatted_addition = f"[{today_date}] {input_value}"
+            if current_val and current_val.lower() != "none":
+                new_value = f"{current_val} | {formatted_addition}"
+            else:
+                new_value = formatted_addition
+        else:
+            new_value = input_value
+
+        await asyncio.to_thread(brands_sheet.update_cell, found_row, col_idx, new_value)
+        
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        await asyncio.to_thread(brands_sheet.update_cell, found_row, 11, today_str)
+
+        await update.message.reply_text(
+            f"✅ *Brand Successfully Updated!*\n\n"
+            f"🆔 *ID:* `{target_id}`\n"
+            f"📝 *Field Changed:* `{col_name}`\n"
+            f"📌 *Updated Content:* {new_value}",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error editing brand: {e}")
+        await update.message.reply_text(f"❌ Error updating brand: {str(e)}")
 
 
 # --- CONVERSATION: ADD BRAND ---
@@ -399,6 +485,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mybrands", my_brands))
     app.add_handler(CommandHandler("search", search_brands))
+    app.add_handler(CommandHandler("editbrand", edit_brand))
     app.add_handler(CommandHandler("auto_distribute", auto_distribute))
     app.add_handler(add_brand_conv)
     app.add_handler(add_log_conv)
