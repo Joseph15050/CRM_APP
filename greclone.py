@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
 TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-ADMIN_TELEGRAM_HANDLES = ["@admin_user"]  # List of Admin Telegram Handles (or Telegram IDs)
+ADMIN_TELEGRAM_HANDLES = ["@greclone"]  # List of Admin Telegram Handles (or Telegram IDs)
 
 # --- GOOGLE SHEETS SETUP ---
 # Ensure your JSON key file is present in the working directory as 'credentials.json'
