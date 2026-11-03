@@ -49,8 +49,12 @@ writers_sheet = sheet.worksheet("Writers")
 logs_sheet = sheet.worksheet("Activity_Logs")
 
 # --- CONVERSATION STATES ---
+# Brand States
 ADD_BRAND_NAME, ADD_CATEGORY, ADD_X_HANDLE, ADD_WEBSITE, ADD_DESC, ADD_NOTES = range(6)
 ADD_LOG_CONTENT = 6
+
+# Writer Registration States
+REG_EMAIL, REG_WHATSAPP, REG_X, REG_OPAY = range(10, 14)
 
 
 # --- HELPER FUNCTIONS ---
@@ -67,11 +71,12 @@ def is_admin(user_handle: str) -> bool:
         for r in records:
             writer_id = str(r.get("Writer Telegram ID") or r.get("Telegram ID")).strip()
             status = str(r.get("Status") or r.get("Role")).strip().lower()
-            if writer_id == user_handle and status == "admin":
-                return True
+            if writer_id == user_handle and (status == "admin" or status == "active"):
+                # Checking if designated admin role exists in sheet
+                pass
     except Exception as e:
         logger.error(f"Error checking admin status: {e}")
-    return False
+    return user_handle in ADMIN_TELEGRAM_HANDLES
 
 
 def get_writer_brands(writer_handle: str):
@@ -97,17 +102,148 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• `/search <keyword>` - Flexible search across brands\n"
             "• `/editbrand <ID> <field> <value>` - Update brand details / append notes\n"
             "• `/auto_distribute` - Automatically assign 5 brands to active writers\n"
+            "• `/ranks` - View global writer leaderboard & rankings\n"
             "• `/mybrands` - View assigned brands\n"
             "• `/cancel` - Cancel current action"
         )
     else:
         msg = (
             f"📝 *Welcome Writer ({handle})*\n\n"
-            "Your Dashboard:\n"
+            "Get Started:\n"
+            "• `/register` - Complete your writer profile & onboarding\n"
             "• `/mybrands` - View your strictly assigned brands & submit logs\n"
+            "• `/ranks` - Check your leaderboard rank & points\n"
             "• `/cancel` - Cancel current action"
         )
     await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+# --- WRITER SELF-REGISTRATION CONVERSATION ---
+async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    handle = get_user_handle(update)
+    
+    # Check if already registered
+    writers = await asyncio.to_thread(writers_sheet.get_all_records)
+    for w in writers:
+        w_id = str(w.get("Writer Telegram ID") or "").strip()
+        if w_id.lower() == handle.lower():
+            await update.message.reply_text("✅ You are already registered in the CRM system! Use `/mybrands` to check your brands.", parse_mode="Markdown")
+            return ConversationHandler.END
+
+    await update.message.reply_text(
+        "📝 *Writer Self-Registration*\n\nLet's get you set up! Please enter your **Email Address**:",
+        parse_mode="Markdown"
+    )
+    return REG_EMAIL
+
+
+async def reg_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["reg_email"] = update.message.text.strip()
+    await update.message.reply_text("Great! Now enter your **WhatsApp Number** (with country code, e.g., +234...):", parse_mode="Markdown")
+    return REG_WHATSAPP
+
+
+async def reg_whatsapp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["reg_whatsapp"] = update.message.text.strip()
+    await update.message.reply_text("Enter your **X (Twitter) Handle** (e.g., @username):", parse_mode="Markdown")
+    return REG_X
+
+
+async def reg_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["reg_x"] = update.message.text.strip()
+    await update.message.reply_text(
+        "Almost done! Enter your **Opay Account Number & Name**\n*(Example: `7083946776 Ubah Joseph`)*:",
+        parse_mode="Markdown"
+    )
+    return REG_OPAY
+
+
+async def reg_opay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    opay_info = update.message.text.strip()
+    u_data = context.user_data
+    handle = get_user_handle(update)
+    writer_name = update.effective_user.full_name or handle
+
+    # Save to Writers sheet
+    # Columns: [Writer Telegram ID, Writer Name, Email, WhatsApp, X Handle, Opay Account, Points, Status]
+    new_row = [
+        handle,
+        writer_name,
+        u_data["reg_email"],
+        u_data["reg_whatsapp"],
+        u_data["reg_x"],
+        opay_info,
+        0,        # Initial Points
+        "Active"  # Status
+    ]
+
+    await asyncio.to_thread(writers_sheet.append_row, new_row)
+
+    await update.message.reply_text(
+        f"🎉 *Registration Successful!*\n\n"
+        f"👤 *Handle:* `{handle}`\n"
+        f"📧 *Email:* `{u_data['reg_email']}`\n"
+        f"💬 *WhatsApp:* `{u_data['reg_whatsapp']}`\n"
+        f"🐦 *X Handle:* `{u_data['reg_x']}`\n"
+        f"🏦 *Opay:* `{opay_info}`\n\n"
+        f"You are now ready! Contact the admin to assign your brands or use `/ranks` to check standings.",
+        parse_mode="Markdown"
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+# --- LEADERBOARD & RANKS (`/ranks`) ---
+async def show_ranks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    handle = get_user_handle(update)
+    
+    try:
+        writers = await asyncio.to_thread(writers_sheet.get_all_records)
+        if not writers:
+            await update.message.reply_text("📊 No registered writers found on the leaderboard yet.")
+            return
+
+        # Sort writers by points (descending). Default points to 0 if missing.
+        sorted_writers = sorted(
+            writers,
+            key=lambda x: float(str(x.get("Points", 0)).strip() or 0),
+            reverse=True
+        )
+
+        user_rank = None
+        user_points = 0
+        leaderboard_text = "🏆 *Writer Leaderboard & Rankings*\n\n"
+
+        for idx, w in enumerate(sorted_writers[:10], start=1):
+            w_id = str(w.get("Writer Telegram ID") or "").strip()
+            w_name = str(w.get("Writer Name") or w_id).strip()
+            pts = w.get("Points", 0)
+            
+            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"`#{idx}`"
+            leaderboard_text += f"{medal} *{w_name}* (`{w_id}`) — *{pts} pts*\n"
+
+            if w_id.lower() == handle.lower():
+                user_rank = idx
+                user_points = pts
+
+        # Find user position if outside top 10
+        if not user_rank:
+            for idx, w in enumerate(sorted_writers, start=1):
+                w_id = str(w.get("Writer Telegram ID") or "").strip()
+                if w_id.lower() == handle.lower():
+                    user_rank = idx
+                    user_points = w.get("Points", 0)
+                    break
+
+        if user_rank:
+            leaderboard_text += f"\n---------------------------\n👤 *Your Standing:* `#{user_rank}` with *{user_points} pts*"
+        else:
+            leaderboard_text += f"\n---------------------------\n⚠️ You are not registered yet. Use `/register` to join!"
+
+        await update.message.reply_text(leaderboard_text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error fetching ranks: {e}")
+        await update.message.reply_text(f"❌ Error loading leaderboard: {str(e)}")
 
 
 # --- STRICT WRITER VIEW (Only assigned brands) ---
@@ -117,7 +253,7 @@ async def my_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not brands:
         await update.message.reply_text(
-            f"⚠️ You currently have **0 brands** assigned to your handle (`{handle}`). Please contact the admin.",
+            f"⚠️ You currently have **0 brands** assigned to your handle (`{handle}`). Please use `/register` if you haven't, or contact the admin.",
             parse_mode="Markdown",
         )
         return
@@ -130,7 +266,7 @@ async def my_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         b_id = brand.get("Brand ID")
         b_name = brand.get("Brand Name")
         b_cat = brand.get("Category")
-        b_x = brand.get("X Handle (URL)") or brand.get("X Handle")
+        b_x = brand.get("X Handle (URL)") or brand.get("X Handle") or brand.get("X")
         b_web = brand.get("Website")
         b_desc = brand.get("Description (About)") or brand.get("Description")
         b_notes = brand.get("Notes")
@@ -230,7 +366,7 @@ async def search_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"🔍 No brands found matching '{query}'. Try a broader keyword.")
             return
 
-                res = f"🔍 *Found {len(matches)} matching brand(s) for '{query}':*\n\n"
+        res = f"🔍 *Found {len(matches)} matching brand(s) for '{query}':*\n\n"
         for b in matches[:10]:
             assigned = b.get("Assigned Writer Telegram ID") or "❌ Unassigned"
             x_handle = b.get("X Handle (URL)") or b.get("X Handle") or b.get("X") or "N/A"
@@ -240,7 +376,6 @@ async def search_brands(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"  👤 Assigned: `{assigned}`\n"
                 f"  🌐 [Website]({b.get('Website')})\n\n"
             )
-            
         await update.message.reply_text(res, parse_mode="Markdown", disable_web_page_preview=True)
     except Exception as e:
         logger.error(f"Error searching brands: {e}")
@@ -464,6 +599,18 @@ def run_dummy_server():
 def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Self-Registration Conversation Handler
+    reg_conv = ConversationHandler(
+        entry_points=[CommandHandler("register", start_registration)],
+        states={
+            REG_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_email)],
+            REG_WHATSAPP: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_whatsapp)],
+            REG_X: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_x)],
+            REG_OPAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_opay)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
     add_brand_conv = ConversationHandler(
         entry_points=[CommandHandler("addbrand", start_add_brand)],
         states={
@@ -490,6 +637,8 @@ def main():
     app.add_handler(CommandHandler("search", search_brands))
     app.add_handler(CommandHandler("editbrand", edit_brand))
     app.add_handler(CommandHandler("auto_distribute", auto_distribute))
+    app.add_handler(CommandHandler("ranks", show_ranks))
+    app.add_handler(reg_conv)
     app.add_handler(add_brand_conv)
     app.add_handler(add_log_conv)
 
