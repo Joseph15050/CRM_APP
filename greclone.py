@@ -54,7 +54,7 @@ ADD_BRAND_NAME, ADD_CATEGORY, ADD_X_HANDLE, ADD_WEBSITE, ADD_DESC, ADD_NOTES = r
 ADD_LOG_CONTENT = 6
 
 # Writer Registration States
-REG_EMAIL, REG_WHATSAPP, REG_X, REG_OPAY = range(10, 14)
+REG_AUTHOR_NAME, REG_EMAIL, REG_WHATSAPP, REG_X, REG_OPAY = range(10, 15)
 
 
 # --- HELPER FUNCTIONS ---
@@ -72,7 +72,6 @@ def is_admin(user_handle: str) -> bool:
             writer_id = str(r.get("Writer Telegram ID") or r.get("Telegram ID")).strip()
             status = str(r.get("Status") or r.get("Role")).strip().lower()
             if writer_id == user_handle and (status == "admin" or status == "active"):
-                # Checking if designated admin role exists in sheet
                 pass
     except Exception as e:
         logger.error(f"Error checking admin status: {e}")
@@ -118,15 +117,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
-
-# --- CONVERSATION STATES ---
-REG_AUTHOR_NAME, REG_EMAIL, REG_WHATSAPP, REG_X, REG_OPAY = range(10, 15)
-
 # --- WRITER SELF-REGISTRATION CONVERSATION ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handle = get_user_handle(update)
     
-    # Check if writer is already registered
     writers = await asyncio.to_thread(writers_sheet.get_all_records)
     for w in writers:
         w_id = str(w.get("Writer Telegram ID") or "").strip()
@@ -178,8 +172,6 @@ async def reg_opay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u_data = context.user_data
     handle = get_user_handle(update)
 
-    # Saved to Writers sheet columns:
-    # [Writer Telegram ID, Writer Name / Blog Author Name, Email, WhatsApp, X Handle, Opay, Assigned Brands Count, Max Capacity, Status, Points]
     new_row = [
         handle,
         u_data["reg_author_name"],
@@ -208,9 +200,6 @@ async def reg_opay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.user_data.clear()
     return ConversationHandler.END
-                    
-    
-
 
 
 # --- LEADERBOARD & RANKS (`/ranks`) ---
@@ -223,7 +212,6 @@ async def show_ranks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("📊 No registered writers found on the leaderboard yet.")
             return
 
-        # Sort writers by points (descending). Default points to 0 if missing.
         sorted_writers = sorted(
             writers,
             key=lambda x: float(str(x.get("Points", 0)).strip() or 0),
@@ -236,7 +224,7 @@ async def show_ranks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for idx, w in enumerate(sorted_writers[:10], start=1):
             w_id = str(w.get("Writer Telegram ID") or "").strip()
-            w_name = str(w.get("Writer Name") or w_id).strip()
+            w_name = str(w.get("Writer Name") or w.get("Blog Author Name") or w_id).strip()
             pts = w.get("Points", 0)
             
             medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"`#{idx}`"
@@ -246,7 +234,6 @@ async def show_ranks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_rank = idx
                 user_points = pts
 
-        # Find user position if outside top 10
         if not user_rank:
             for idx, w in enumerate(sorted_writers, start=1):
                 w_id = str(w.get("Writer Telegram ID") or "").strip()
@@ -330,7 +317,7 @@ async def auto_distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for writer in writers_data:
             w_id = str(writer.get("Writer Telegram ID") or writer.get("Telegram ID")).strip()
-            w_name = str(writer.get("Writer Name")).strip()
+            w_name = str(writer.get("Writer Name") or writer.get("Blog Author Name") or "").strip()
             status = str(writer.get("Status", "Active")).strip().lower()
 
             if status != "active" or not w_id:
@@ -554,6 +541,63 @@ async def add_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# --- ADMIN: ADD / DEDUCT POINTS FOR WRITERS ---
+async def add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    handle = get_user_handle(update)
+    if not await asyncio.to_thread(is_admin, handle):
+        await update.message.reply_text("⛔ Admin access required.")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: `/addpoints <@writer_handle> <points>`\n*Example:* `/addpoints @gingomartmgt 10`", parse_mode="Markdown")
+        return
+
+    target_handle = context.args[0].strip()
+    if not target_handle.startswith("@"):
+        target_handle = f"@{target_handle}"
+
+    try:
+        pts_to_add = float(context.args[1].strip())
+    except ValueError:
+        await update.message.reply_text("❌ Points must be a valid number (e.g., 10, 5, -2).")
+        return
+
+    try:
+        writers_data = await asyncio.to_thread(writers_sheet.get_all_records)
+        found_row = None
+        current_pts = 0.0
+
+        for idx, writer in enumerate(writers_data):
+            w_id = str(writer.get("Writer Telegram ID") or "").strip()
+            if w_id.lower() == target_handle.lower():
+                found_row = idx + 2  # 1-indexed + header row
+                try:
+                    current_pts = float(str(writer.get("Points", 0)).strip() or 0)
+                except ValueError:
+                    current_pts = 0.0
+                break
+
+        if not found_row:
+            await update.message.reply_text(f"❌ Writer `{target_handle}` not found in the CRM.", parse_mode="Markdown")
+            return
+
+        new_pts = current_pts + pts_to_add
+
+        # Update Points column in Google Sheets (Column 10 / J)
+        await asyncio.to_thread(writers_sheet.update_cell, found_row, 10, new_pts)
+
+        await update.message.reply_text(
+            f"✅ *Points Updated Successfully!*\n\n"
+            f"👤 *Writer:* `{target_handle}`\n"
+            f"➕ *Added:* `{pts_to_add}` pts\n"
+            f"🏆 *New Total:* `{new_pts}` pts",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error adding points: {e}")
+        await update.message.reply_text(f"❌ Error updating points: {str(e)}")
+
+
 # --- CONVERSATION: ADD LOG NOTE ---
 async def handle_log_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -578,8 +622,8 @@ async def save_log_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     writer_name = handle
     for w in writers:
         w_id = str(w.get("Writer Telegram ID") or w.get("Telegram ID")).strip()
-        if w_id == handle:
-            writer_name = w.get("Writer Name", handle)
+        if w_id.lower() == handle.lower():
+            writer_name = w.get("Writer Name") or w.get("Blog Author Name") or handle
 
     logs = await asyncio.to_thread(logs_sheet.get_all_records)
     log_id = f"LOG-{1001 + len(logs)}"
@@ -620,7 +664,7 @@ def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Self-Registration Conversation Handler
-        reg_conv = ConversationHandler(
+    reg_conv = ConversationHandler(
         entry_points=[CommandHandler("register", start_registration)],
         states={
             REG_AUTHOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_author_name)],
@@ -631,7 +675,6 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
-
 
     add_brand_conv = ConversationHandler(
         entry_points=[CommandHandler("addbrand", start_add_brand)],
@@ -660,6 +703,7 @@ def main():
     app.add_handler(CommandHandler("editbrand", edit_brand))
     app.add_handler(CommandHandler("auto_distribute", auto_distribute))
     app.add_handler(CommandHandler("ranks", show_ranks))
+    app.add_handler(CommandHandler("addpoints", add_points))
     app.add_handler(reg_conv)
     app.add_handler(add_brand_conv)
     app.add_handler(add_log_conv)
