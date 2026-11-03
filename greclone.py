@@ -152,7 +152,7 @@ async def reg_whatsapp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def reg_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["reg_x"] = update.message.text.strip()
     await update.message.reply_text(
-        "Almost done! Enter your **Opay Account Number & Name**\n*(Example: `7083946776 Ubah Joseph`)*:",
+        "Almost done! Enter your **Opay Account Number & Name**\n*(Example: `7085946786 John Richard`)*:",
         parse_mode="Markdown"
     )
     return REG_OPAY
