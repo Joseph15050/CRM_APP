@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9215727245:AAHS4_B3C-mAdKTxHgVjvpD3N30Bx2zh1G0")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_TELEGRAM_HANDLES = ["@greclone"]
 
 # --- GOOGLE SHEETS SETUP ---
