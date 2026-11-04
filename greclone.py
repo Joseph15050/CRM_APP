@@ -118,13 +118,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- WRITER SELF-REGISTRATION CONVERSATION ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     handle = get_user_handle(update)
+    raw_user_id = str(update.effective_user.id)
     
     writers = await asyncio.to_thread(writers_sheet.get_all_records)
     for w in writers:
-        w_id = str(w.get("Writer Telegram ID") or "").strip()
-        if w_id.lower() == handle.lower():
+        w_id = str(w.get("Writer Telegram ID") or "").strip().lower()
+        # Block if either handle (@username) or numeric Telegram ID already exists in the sheet
+        if w_id and (w_id == handle.lower() or w_id == raw_user_id.lower()):
             await update.message.reply_text(
-                "✅ You are already registered in the CRM system! Use `/mybrands` to check your assigned brands."
+                "⚠️ *Registration Blocked*\n\n"
+                "Your Telegram account is already registered in the CRM! "
+                "Use `/mybrands` to view your assigned brands or `/ranks` to check your leaderboard standing.", 
+                parse_mode="Markdown"
             )
             return ConversationHandler.END
 
@@ -135,6 +140,7 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode="Markdown"
     )
     return REG_AUTHOR_NAME
+
 
 
 async def reg_author_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
